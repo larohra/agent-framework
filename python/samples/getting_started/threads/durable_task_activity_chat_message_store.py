@@ -49,7 +49,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Collection
 
@@ -58,7 +58,7 @@ from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import DefaultAzureCredential
 from durabletask.azuremanaged.client import DurableTaskSchedulerClient
 from durabletask.azuremanaged.worker import DurableTaskSchedulerWorker
-from durabletask.task import ActivityContext, OrchestrationContext
+from durabletask.task import when_any, OrchestrationContext
 from durabletask.worker import TaskHubGrpcWorker
 from pydantic import BaseModel
 
@@ -66,8 +66,8 @@ dotenv.load_dotenv()
 LOG_FILE = Path(__file__).with_name("durable_task_activity_chat_store.log")
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s [%(threadName)s %(thread)d]: %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8", mode="w")],
+    format="%(asctime)s %(levelname)s %(name)s [%(threadName)s %(thread)d %(funcName)s]: %(message)s",
+    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")],
     force=True,
 )
 
@@ -169,7 +169,11 @@ class DurableTaskActivityChatMessageStore(ChatMessageStoreProtocol):
         payload = json.loads(state.serialized_custom_status)
         entries = payload.get("messages", [])
         LOGGER.info("Retrieved %d messages from orchestrator %s: %s", len(entries), self._instance_id, entries)
-        return [ChatMessage.from_dict(msg) if isinstance(msg, dict) else ChatMessage.from_json(msg) for msg in entries]
+        try:
+            return [ChatMessage.from_dict(msg) if isinstance(msg, dict) else ChatMessage.from_json(msg) for msg in entries]
+        except Exception as exc:
+            LOGGER.exception("Failed to deserialize messages", exc_info=exc)
+        return []
 
     async def deserialize_state(self, serialized_store_state: Any, **kwargs: Any) -> None:
         if serialized_store_state:
@@ -193,29 +197,51 @@ def chat_store_orchestrator(context: OrchestrationContext, state: dict[str, Any]
 
     context.set_custom_status({"messages": messages, "activity_runs": activity_runs})
 
-    event = yield context.wait_for_external_event(_ORCHESTRATOR_EVENT)
-    LOGGER.info("Orchestrator %s received event: %s", context.instance_id, event)
-    if not isinstance(event, dict) or "messages" not in event:
-        state["last_error"] = {"received": event}
+    timeout_deadline = context.current_utc_datetime + timedelta(seconds=10)
+    timeout_task = context.create_timer(timeout_deadline)
+
+    event_task = context.wait_for_external_event(_ORCHESTRATOR_EVENT)
+
+    winner_task = yield when_any([event_task, timeout_task])
+
+    result = {}
+    if winner_task == event_task:
+        event = yield event_task
+        LOGGER.info("Orchestrator %s received event: %s", context.instance_id, event)
+        if not isinstance(event, dict) or "messages" not in event:
+            state["last_error"] = {"received": event}
+            context.set_custom_status(state)
+            context.continue_as_new(state, save_events=True)
+            return
+
+        run_payload = {
+            "messages": event["messages"],
+            "requested_at": event.get("requested_at"),
+            "payload_id": event.get("payload_id"),
+        }
+        result = yield context.call_activity(_ACTIVITY_NAME, input=run_payload)
+        LOGGER.info("Activity %s completed with result: %s", _ACTIVITY_NAME, result)
+
+        new_messages = result.get("messages", []) if isinstance(result, dict) else []
+        if new_messages:
+            messages.extend(new_messages)
+        activity_runs.extend(
+            {"role": message.get("role"), "metadata": message.get("metadata")}
+            for message in result.get("messages", [])
+            if message.get("role") is not None or message.get("metadata") is not None
+        )
+
+        state = {"messages": messages, "activity_runs": activity_runs}
         context.set_custom_status(state)
         context.continue_as_new(state, save_events=True)
-        return
-
-    run_payload = {
-        "messages": event["messages"],
-        "requested_at": event.get("requested_at"),
-    }
-    result = yield context.call_activity(_ACTIVITY_NAME, input=run_payload)
-    LOGGER.info("Activity %s completed with result: %s", _ACTIVITY_NAME, result)
-
-    new_messages = result.get("messages", []) if isinstance(result, dict) else []
-    if new_messages:
-        messages.extend(new_messages)
-    activity_runs.append(result)
-
-    state = {"messages": messages, "activity_runs": activity_runs}
-    context.set_custom_status(state)
-    context.continue_as_new(state, save_events=True)
+    else:
+        # Timeout occurred
+        LOGGER.info(f"Orchestrator {context.instance_id} timed out waiting for event")
+        result = {
+            "status": "Timeout",
+            "timed_out_at": context.current_utc_datetime.isoformat()
+        }
+        return result
 
 
 def append_messages_activity(
@@ -256,7 +282,7 @@ def append_messages_activity(
             "metadata": {
                 "processed_at": datetime.now(timezone.utc).isoformat(),
                 "requested_at": requested_at,
-                "activity": _ACTIVITY_NAME,
+                "activity": payload.get("payload_id"),
             },
         })
 
@@ -277,7 +303,7 @@ def create_agent(orchestrator_name: str, client: DurableTaskSchedulerClient):
     """Create an agent using the durable activity-backed chat store."""
 
     def factory() -> DurableTaskActivityChatMessageStore:
-        return DurableTaskActivityChatMessageStore(client, orchestrator_name)
+        return DurableTaskActivityChatMessageStore(client, orchestrator_name, instance_id=None)
 
     chat_client = AzureOpenAIChatClient()
     return chat_client.create_agent(
@@ -303,6 +329,8 @@ async def main() -> None:
 
     orchestrator_name = _register_worker(worker)
 
+    termination_instance_id: str | None = None
+
     try:
         worker.start()
         client = DurableTaskSchedulerClient(
@@ -318,6 +346,12 @@ async def main() -> None:
             "Log our first sprint update.",
             "Add a second note about the upcoming release.",
         ]
+
+        secondary_prompts = [
+            "You can use the previous suggested title for context to provide another title.",
+            "Make the title a haiku (just for fun).",
+        ]
+
         for prompt in prompts:
             LOGGER.info("User Prompt: %s", prompt)
             reply = await agent.run(prompt, thread=thread)
@@ -326,7 +360,23 @@ async def main() -> None:
         store = thread.message_store
         if not isinstance(store, DurableTaskActivityChatMessageStore):
             raise RuntimeError("Thread is not using DurableTaskActivityChatMessageStore as expected.")
+        
+        termination_instance_id = store.instance_id
 
+        try:
+            await asyncio.to_thread(
+                client.wait_for_orchestration_completion,
+                termination_instance_id,
+                fetch_payloads=True,
+                timeout=20,
+            )
+            LOGGER.info("Orchestrator instance %s reported completion", termination_instance_id)
+        except TimeoutError:
+            LOGGER.warning(
+                "Timed out waiting for orchestrator instance %s to complete after termination.",
+                termination_instance_id,
+            )
+        
         messages = await store.list_messages()
         LOGGER.info("Persisted message count: %d", len(messages))
         for msg in messages:
@@ -342,6 +392,14 @@ async def main() -> None:
             LOGGER.info("Activity run metadata: %s", json.dumps(activity_runs, indent=2))
 
     finally:
+        await asyncio.to_thread(
+            client.terminate_orchestration,
+            termination_instance_id,
+            output={"reason": "Sample conversation complete"},
+            recursive=True,
+        )
+        LOGGER.info("Sent terminate request for orchestrator instance %s", termination_instance_id)
+
         worker.stop()
         LOGGER.info("Durable worker stopped")
 
