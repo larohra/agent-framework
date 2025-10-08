@@ -103,6 +103,13 @@ Once comfortable with these, explore the rest of the samples below.
 | Aggregate Results of Different Types | [parallelism/aggregate_results_of_different_types.py](./parallelism/aggregate_results_of_different_types.py) | Handle results of different types from multiple concurrent executors |
 | Map-Reduce with Visualization | [parallelism/map_reduce_and_visualization.py](./parallelism/map_reduce_and_visualization.py) | Fan-out/fan-in pattern with diagram export |
 
+### durable_task
+
+| Sample | File | Concepts |
+|---|---|---|
+| Durable Checkpoint Storage | [durable_task/durable_task_checkpoint_storage.py](./durable_task/durable_task_checkpoint_storage.py) | Implement a Durable Task-backed `CheckpointStorage` adapter and persist Agent Framework workflow checkpoints through scheduler events |
+| Durable Orchestrated Workflow | [durable_task/durable_task_orchestrated_workflow.py](./durable_task/durable_task_orchestrated_workflow.py) | Use a Durable Task orchestration to run Agent Framework workflows via activities, capture run metadata, and poll execution status |
+
 ### state-management
 
 | Sample | File | Concepts |

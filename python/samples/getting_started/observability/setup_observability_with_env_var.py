@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from agent_framework import ai_function
 from agent_framework.observability import get_tracer, setup_observability
-from agent_framework.openai import OpenAIResponsesClient
+from agent_framework.azure import AzureOpenAIChatClient
 from opentelemetry import trace
 from opentelemetry.trace.span import format_trace_id
 from pydantic import Field
@@ -105,7 +105,7 @@ async def main(scenario: Literal["chat_client", "chat_client_stream", "ai_functi
     with get_tracer().start_as_current_span("Sample Scenario's", kind=trace.SpanKind.CLIENT) as current_span:
         print(f"Trace ID: {format_trace_id(current_span.get_span_context().trace_id)}")
 
-        client = OpenAIResponsesClient()
+        client = AzureOpenAIChatClient()
 
         # Scenarios where telemetry is collected in the SDK, from the most basic to the most complex.
         if scenario == "ai_function" or scenario == "all":

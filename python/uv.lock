@@ -75,6 +75,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "durabletask", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "durabletask-azuremanaged", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "flit", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "mypy", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poethepoet", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -112,6 +114,8 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "durabletask", specifier = ">=0.4.0" },
+    { name = "durabletask-azuremanaged", specifier = ">=0.3.1" },
     { name = "flit", specifier = ">=3.12.0" },
     { name = "mypy", specifier = ">=1.16.1" },
     { name = "poethepoet", specifier = ">=0.36.0" },
@@ -626,6 +630,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a5/ae/136395dfbfe00dfc94da3f3e136d0b13f394cba8f4841120e34226265780/async_timeout-5.0.1.tar.gz", hash = "sha256:d9321a7a3d5a6a5e187e824d2fa0793ce379a202935782d555d6e9d2735677d3", size = 9274, upload-time = "2024-11-06T16:41:39.6Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/ba/e2081de779ca30d473f21f5b30e0e737c438205440784c7dfc81efc2b029/async_timeout-5.0.1-py3-none-any.whl", hash = "sha256:39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c", size = 6233, upload-time = "2024-11-06T16:41:37.9Z" },
+]
+
+[[package]]
+name = "asyncio"
+version = "4.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/ea/26c489a11f7ca862d5705db67683a7361ce11c23a7b98fc6c2deaeccede2/asyncio-4.0.0.tar.gz", hash = "sha256:570cd9e50db83bc1629152d4d0b7558d6451bb1bfd5dfc2e935d96fc2f40329b", size = 5371, upload-time = "2025-08-05T02:51:46.605Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/64/eff2564783bd650ca25e15938d1c5b459cda997574a510f7de69688cb0b4/asyncio-4.0.0-py3-none-any.whl", hash = "sha256:c1eddb0659231837046809e68103969b2bef8b0400d59cfa6363f6b5ed8cc88b", size = 5555, upload-time = "2025-08-05T02:51:45.767Z" },
 ]
 
 [[package]]
@@ -1414,6 +1427,34 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6b/5c/330ea8d383eb2ce973df34d1239b3b21e91cd8c865d21ff82902d952f91f/docutils-0.19.tar.gz", hash = "sha256:33995a6753c30b7f577febfc2c50411fec6aac7f7ffeb7c4cfe5991072dcf9e6", size = 2056383, upload-time = "2022-07-05T20:17:31.045Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/93/69/e391bd51bc08ed9141ecd899a0ddb61ab6465309f1eb470905c0c8868081/docutils-0.19-py3-none-any.whl", hash = "sha256:5e1de4d849fee02c63b040a4a3fd567f4ab104defd8a5511fbbc24a8a017efbc", size = 570472, upload-time = "2022-07-05T20:17:26.388Z" },
+]
+
+[[package]]
+name = "durabletask"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "asyncio", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "grpcio", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "packaging", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ab/8d/b8f26d57a8babdbbabaddb7bb48b01cc530c1927cbb2f54b3667a0c69cac/durabletask-0.4.1.tar.gz", hash = "sha256:9b176ac7c44a47b9895ed4f00e4d3e97c02ce88d784f672f15269531d2352c3c", size = 46552, upload-time = "2025-08-19T19:39:12.387Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/bc/822a260a1bb1c295e7df1e2b05ef8536b4653c283b8d4c5f8bbe9452d04f/durabletask-0.4.1-py3-none-any.whl", hash = "sha256:3f0f52ac7ce44868504e60f6aaf8a4d55275013d318f8dbecddb0a325465d207", size = 48787, upload-time = "2025-08-19T19:39:11.384Z" },
+]
+
+[[package]]
+name = "durabletask-azuremanaged"
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-identity", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "durabletask", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3c/a9/50be861c2783135baaf342b8f8fcace26cc2eee370fb5b03ef3d3f24d8e6/durabletask_azuremanaged-0.3.1.tar.gz", hash = "sha256:0d5b170ea8ae8faa62f72cbe606cab46fe273d3e156350c5be8f99ec683abdbd", size = 4228, upload-time = "2025-08-19T19:26:23.801Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/f7/7c36aa4fb929349c09adaddcf6b205cf83996861db3ecb131d4268d9b6a7/durabletask_azuremanaged-0.3.1-py3-none-any.whl", hash = "sha256:2bc85001f5d825290ba7c9955873e938c85e99e4b8a20a73d9953e16157fbe0d", size = 6216, upload-time = "2025-08-19T19:26:21.7Z" },
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ from typing import Annotated
 import dotenv
 from agent_framework import HostedCodeInterpreterTool
 from agent_framework.azure import AzureAIAgentClient
-from agent_framework.observability import get_tracer
+from agent_framework.observability import get_tracer, setup_observability
 from azure.ai.projects.aio import AIProjectClient
 from azure.identity.aio import AzureCliCredential
 from opentelemetry.trace import SpanKind
@@ -43,6 +43,8 @@ async def get_weather(
 
 
 async def main() -> None:
+
+    setup_observability()
     """Run an AI service.
 
     This function runs an AI service and prints the output.
@@ -68,7 +70,7 @@ async def main() -> None:
         # This will enable tracing and configure the application to send telemetry data to the
         # Application Insights instance attached to the Azure AI project.
         # This will override any existing configuration.
-        await client.setup_azure_ai_observability()
+        # await client.setup_azure_ai_observability()
 
         with get_tracer().start_as_current_span(
             name="Foundry Telemetry from Agent Framework", kind=SpanKind.CLIENT
