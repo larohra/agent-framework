@@ -46,14 +46,14 @@ orchestration instance. You can delete it manually via the Durable Task Schedule
 management APIs if desired.
 """
 
-from __future__ import annotations
-
+import dotenv
 import asyncio
 import json
 import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from pathlib import Path
 
 from agent_framework import (
     AgentExecutor,
@@ -61,18 +61,30 @@ from agent_framework import (
     Executor,
     WorkflowBuilder,
     WorkflowContext,
+    Workflow,
     WorkflowOutputEvent,
     handler,
+    CheckpointStorage,
+    WorkflowCheckpoint
 )
-from agent_framework._workflows._checkpoint import CheckpointStorage, WorkflowCheckpoint
-from agent_framework.openai import OpenAIChatClient
+from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import DefaultAzureCredential
-from durabletask.azuremanaged import DurableTaskSchedulerClient, DurableTaskSchedulerWorker
+from durabletask.azuremanaged.client import DurableTaskSchedulerClient
+from durabletask.azuremanaged.worker import DurableTaskSchedulerWorker
 from durabletask.task import OrchestrationContext
 from durabletask.worker import TaskHubGrpcWorker
 
+dotenv.load_dotenv()
+LOG_FILE = Path(__file__).with_name("durable_task_checkpoint_storage.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s [%(threadName)s %(thread)d %(funcName)s]: %(message)s",
+    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8", mode="w")],
+    force=True,
+)
+
 LOGGER = logging.getLogger("durable_task_checkpoint_sample")
-logging.basicConfig(level=logging.INFO)
+LOGGER.setLevel(logging.INFO)
 
 _EVENT_NAME = "workflow_checkpoint"
 
@@ -112,6 +124,10 @@ class DurableTaskCheckpointStorage(CheckpointStorage):
         self._orchestrator_name = orchestrator_name
         self._instance_id = instance_id or self._start_orchestrator()
 
+    @property
+    def instance_id(self) -> str:
+        return self._instance_id
+
     def _start_orchestrator(self) -> str:
         LOGGER.info("Starting checkpoint vault orchestrator '%s'", self._orchestrator_name)
         instance_id = self._client.schedule_new_orchestration(
@@ -125,8 +141,8 @@ class DurableTaskCheckpointStorage(CheckpointStorage):
             await asyncio.to_thread(
                 self._client.raise_orchestration_event,
                 self._instance_id,
-                _EVENT_NAME,
-                payload,
+                event_name=_EVENT_NAME,
+                data=payload,
             )
         except Exception as exc:
             LOGGER.exception("Failed to raise checkpoint event %s", payload)
@@ -137,7 +153,7 @@ class DurableTaskCheckpointStorage(CheckpointStorage):
             state = await asyncio.to_thread(
                 self._client.get_orchestration_state,
                 self._instance_id,
-                True,
+                fetch_payloads=True,
             )
         except Exception as exc:
             raise RuntimeError("Failed to query Durable orchestration state") from exc
@@ -244,10 +260,10 @@ class SummarizeAgent(Executor):
         await ctx.yield_output(response.agent_run_response.text or "")
 
 
-def build_sample_workflow(checkpoint_storage: CheckpointStorage) -> tuple[AgentExecutor, Any]:
+def build_sample_workflow(checkpoint_storage: CheckpointStorage) -> tuple[AgentExecutor, Workflow]:
     """Construct a small workflow that benefits from checkpoint persistence."""
 
-    chat_client = OpenAIChatClient()
+    chat_client = AzureOpenAIChatClient()
     agent = chat_client.create_agent(
         name="durable-checkpoint-agent",
         instructions=(
@@ -279,11 +295,12 @@ def _register_worker(worker: TaskHubGrpcWorker) -> str:
     return orchestrator_name
 
 
-async def run_workflow_with_checkpoints(storage: CheckpointStorage, workflow: Any) -> str | None:
+async def run_workflow_with_checkpoints(storage: CheckpointStorage, workflow: Workflow) -> str | None:
     """Execute the workflow and capture the latest checkpoint ID."""
 
     workflow_id: str | None = None
-    async for event in workflow.run_stream("Document a high-level summary of Durable Task checkpointing." ):
+    # "Document a high-level summary of Durable Task checkpointing."
+    async for event in workflow.run_stream("Can you summarize the last response in much simpler terms?"):
         if isinstance(event, WorkflowOutputEvent):
             LOGGER.info("Workflow output: %s", event.data)
         workflow_id = getattr(event, "workflow_id", workflow_id)
@@ -309,6 +326,7 @@ async def main() -> None:
     )
 
     orchestrator_name = _register_worker(worker)
+    instance_id = None
 
     try:
         worker.start()
@@ -318,12 +336,29 @@ async def main() -> None:
             token_credential=credential,
         )
 
-        storage = DurableTaskCheckpointStorage(client, orchestrator_name)
+        storage = DurableTaskCheckpointStorage(client, orchestrator_name, instance_id="12411a079a4d49df8c1d4919cbe79cca")
+        instance_id = storage.instance_id
+        LOGGER.info("Using checkpoint vault instance_id=%s", instance_id)
         agent_executor, workflow = build_sample_workflow(storage)
 
         latest_cp_id = await run_workflow_with_checkpoints(storage, workflow)
+        LOGGER.info("Workflow run complete, latest checkpoint ID: %s", latest_cp_id)
         if not latest_cp_id:
             return
+
+        try:
+            await asyncio.to_thread(
+                client.wait_for_orchestration_completion,
+                instance_id,
+                fetch_payloads=True,
+                timeout=10,
+            )
+            LOGGER.info("Orchestrator instance %s reported completion", instance_id)
+        except TimeoutError:
+            LOGGER.warning(
+                "Timed out waiting for orchestrator instance %s to complete after termination.",
+                instance_id,
+            )
 
         loaded = await storage.load_checkpoint(latest_cp_id)
         if loaded:
@@ -336,6 +371,11 @@ async def main() -> None:
     except Exception as exc:  # pragma: no cover - defensive for sample clarity
         LOGGER.exception("Sample failed: %s", exc)
     finally:
+        await asyncio.to_thread(
+            client.suspend_orchestration,
+            instance_id
+        )
+        LOGGER.info("Sent suspend request for orchestrator instance %s", instance_id)
         worker.stop()
         LOGGER.info("Durable worker stopped")
 

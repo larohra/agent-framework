@@ -45,10 +45,11 @@ from agent_framework import (
     handler,
 )
 from agent_framework import Executor as AFExecutor
-from agent_framework import WorkflowContext
+from agent_framework import WorkflowContext, Workflow
 from agent_framework.openai import OpenAIChatClient
 from azure.identity import DefaultAzureCredential
-from durabletask.azuremanaged import DurableTaskSchedulerClient, DurableTaskSchedulerWorker
+from durabletask.azuremanaged.client import DurableTaskSchedulerClient
+from durabletask.azuremanaged.worker import DurableTaskSchedulerWorker
 from durabletask.task import OrchestrationContext
 from durabletask.worker import TaskHubGrpcWorker
 
@@ -146,7 +147,7 @@ class CollectNotesExecutor(AFExecutor):
         await ctx.send_message(text)
 
 
-def _build_agent_workflow(config: WorkflowRunConfig) -> tuple[Any, Any]:
+def _build_agent_workflow(config: WorkflowRunConfig) -> tuple[AgentExecutor, Workflow]:
     """Create the Agent Framework workflow executed inside the Durable activity."""
 
     chat_client = OpenAIChatClient()
@@ -200,7 +201,7 @@ def execute_agent_workflow(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _register_worker(worker: TaskHubGrpcWorker) -> tuple[str, str]:
     orchestrator_name = worker.add_orchestrator(workflow_run_orchestrator)
-    activity_name = worker.add_activity(execute_agent_workflow, name=_ACTIVITY_NAME)
+    activity_name = worker.add_activity(execute_agent_workflow)
     LOGGER.info("Registered orchestrator '%s' and activity '%s'", orchestrator_name, activity_name)
     return orchestrator_name, activity_name
 
