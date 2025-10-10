@@ -204,3 +204,8 @@ agents.md
 # AI
 .claude/
 WARP.md
+__azurite_db_queue__.json
+__azurite_db_queue_extent__.json
+__azurite_db_table__.json
+AzuriteConfig
+python/samples/getting_started/functions-with-agents/.funcignore

@@ -29,6 +29,8 @@ dependencies = [
     "agent-framework-mem0",
     "agent-framework-redis",
     "agent-framework-devui",
+    "azure-functions>=1.24.0",
+    "azure-functions-durable>=1.4.0",
 ]
 
 [dependency-groups]
