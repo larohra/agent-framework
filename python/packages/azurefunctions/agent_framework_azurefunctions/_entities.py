@@ -113,7 +113,7 @@ class AgentEntity:
         try:
             logger.debug("[AgentEntity.run_agent] Starting agent invocation")
 
-            run_kwargs: dict[str, Any] = {"messages": self.state.get_chat_messages()}
+            run_kwargs: dict[str, Any] = {"messages": self.state.get_chat_messages(include_metadata=False)}
             if not enable_tool_calls:
                 run_kwargs["tools"] = None
             if response_format:

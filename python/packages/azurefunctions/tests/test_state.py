@@ -83,6 +83,19 @@ class TestAgentStateCorrelationId:
         metadata = state_snapshot["conversation_history"][-1]["additional_properties"]
         assert metadata["correlation_id"] == "corr-123"
 
+    def test_get_chat_messages_can_remove_metadata(self) -> None:
+        state = AgentState()
+        state.add_user_message("Hello", correlation_id="corr-800-request")
+
+        original_messages = state.get_chat_messages()
+        assert original_messages[0].additional_properties
+
+        sanitized_messages = state.get_chat_messages(include_metadata=False)
+
+        assert sanitized_messages[0] is not state.conversation_history[0]
+        assert sanitized_messages[0].additional_properties == {}
+        assert sanitized_messages[0].text == "Hello"
+
     def test_restore_state_preserves_agent_response_lookup(self) -> None:
         state = AgentState()
         state.add_user_message("Hello", correlation_id="corr-600-request")

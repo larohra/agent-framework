@@ -88,9 +88,29 @@ class AgentState:
             f"Added assistant ChatMessage to history with AgentRunResponse metadata (correlation_id: {correlation_id})"
         )
 
-    def get_chat_messages(self) -> list[ChatMessage]:
-        """Return a copy of the full conversation history."""
-        return list(self.conversation_history)
+    def get_chat_messages(self, *, include_metadata: bool = True) -> list[ChatMessage]:
+        """Return conversation history, optionally stripping metadata."""
+        if include_metadata:
+            return list(self.conversation_history)
+
+        sanitized_messages: list[ChatMessage] = []
+        for message in self.conversation_history:
+            if not getattr(message, "additional_properties", None):
+                sanitized_messages.append(message)
+                continue
+
+            sanitized_messages.append(
+                ChatMessage(
+                    role=message.role,
+                    contents=list(message.contents),
+                    author_name=message.author_name,
+                    message_id=message.message_id,
+                    additional_properties={},
+                    raw_representation=message.raw_representation,
+                )
+            )
+
+        return sanitized_messages
 
     def try_get_agent_response(self, correlation_id: str) -> dict[str, Any] | None:
         """Get an agent response by correlation ID.
