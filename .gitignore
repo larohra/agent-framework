@@ -226,3 +226,5 @@ local.settings.json
 
 # Database files
 *.db
+**/memory-bank/
+python/projectBrief.md
