@@ -7,9 +7,14 @@ Components used in this sample:
 Prerequisites: set `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` (plus `AZURE_OPENAI_API_KEY` or Azure CLI authentication) before starting the Functions host."""
 
 from typing import Any
+from pydantic import BaseModel
 
 from agent_framework.azure import AgentFunctionApp, AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
+
+class HelloWorldAgent(BaseModel):
+    text: str
+    
 
 
 # 1. Instantiate the agent with the chosen deployment and instructions.
@@ -19,6 +24,7 @@ def _create_agent() -> Any:
     return AzureOpenAIChatClient(credential=AzureCliCredential()).create_agent(
         name="Joker",
         instructions="You are good at telling jokes.",
+        response_format=HelloWorldAgent,
     )
 
 

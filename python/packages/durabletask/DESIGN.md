@@ -4,11 +4,18 @@
 
 This package, `agent-framework-durabletask`, provides a durability layer for the Microsoft Agent Framework using the `durabletask` Python SDK. It enables stateful, reliable, and distributed agent execution on any platform (Bring Your Own Platform), decoupling the agent's durability from the Azure Functions platform.
 
+## Design Decision
+
+**Selected Approach: Object-Oriented Wrappers with Symmetric Factory Pattern**
+
+We will use a symmetric Object-Oriented design where both the Client (external) and Orchestrator (internal) expose a consistent interface for retrieving and interacting with durable agents.
+
 ## Core Philosophy
 
 *   **Native `DurableEntity` Support**: We will leverage the `DurableEntity` support introduced in `durabletask` v1.0.0.
-*   **Wrapper Pattern**: We will provide wrapper classes (`AgentWorker`, `AgentClient`) that accept *any* compatible `durabletask` worker or client.
-*   **Separation of Concerns**: We will provide distinct APIs for external client interactions vs. internal orchestration interactions to ensure type safety and clarity.
+*   **Symmetric Factories**: `DurableAIAgentClient` (for external use) and `DurableAIAgentOrchestrator` (for internal use) both provide a `get_agent` method.
+*   **Unified Interface**: `DurableAIAgent` serves as the common interface for executing agents, regardless of the context (Client vs Orchestration).
+*   **Consistent Return Type**: `DurableAIAgent.run` always returns a `Task` (or compatible awaitable), ensuring consistent usage patterns.
 
 ## Architecture
 
@@ -20,13 +27,14 @@ packages/durabletask/
 ├── README.md
 ├── agent_framework_durabletask/
 │   ├── __init__.py
-│   ├── _worker.py      # AgentWorker wrapper
-│   ├── _client.py      # AgentClient wrapper (External interactions)
-│   ├── _orchestration.py # Orchestration helpers (Internal interactions)
+│   ├── _worker.py      # DurableAIAgentWorker
+│   ├── _client.py      # DurableAIAgentClient
+│   ├── _orchestrator.py # DurableAIAgentOrchestrator
 │   ├── _entities.py    # AgentEntity implementation
 │   ├── _models.py      # Data models (RunRequest, AgentResponse, etc.)
 │   ├── _durable_agent_state.py # State schema (Ported from azurefunctions)
-│   └── _utils.py
+│   ├── _shim.py        # DurableAIAgent implementation
+│   └── _utils.py       # Mixins and helpers
 └── tests/
 ```
 
@@ -39,11 +47,18 @@ packages/durabletask/
 
 We will implement a class `AgentEntity` that inherits from `durabletask.entities.DurableEntity`.
 
+**Important**: Due to the nature of the `durabletask` SDK, `DurableEntity` subclasses cannot have custom constructors. The SDK instantiates entities using a parameterless constructor. Therefore, we must use a **factory pattern** to inject the agent instance, similar to the approach used in `agent-framework-azurefunctions`.
+
 ```python
 class AgentEntity(durabletask.entities.DurableEntity):
-    def __init__(self, agent: AgentProtocol):
-        self.agent = agent
-        self.state = DurableAgentState()
+    """Durable entity that wraps an agent and maintains conversation state.
+    
+    Note: This class cannot have a custom __init__ due to durabletask SDK constraints.
+    Use create_agent_entity() factory function to create instances with injected agents.
+    """
+    
+    agent: AgentProtocol
+    state: DurableAgentState
 
     async def run_agent(self, input_data: dict[str, Any]) -> dict[str, Any]:
         # 1. Deserialize Input
@@ -55,8 +70,8 @@ class AgentEntity(durabletask.entities.DurableEntity):
         
         # 3. Rehydrate Chat History
         chat_messages = [
-            m.to_chat_message() 
-            for entry in self.state.data.conversation_history 
+            m.to_chat_message()
+            for entry in self.state.data.conversation_history
             for m in entry.messages
         ]
         
@@ -70,133 +85,202 @@ class AgentEntity(durabletask.entities.DurableEntity):
         self.state.data.conversation_history.append(state_response)
         
         # 6. Return Result (Serialized AgentRunResponse)
-        return response.to_dict() 
+        return response.to_dict()
 
     def reset(self) -> None:
         self.state = DurableAgentState()
+
+
+def create_agent_entity(agent: AgentProtocol) -> type[AgentEntity]:
+    """Factory function to create an AgentEntity class with an injected agent.
+    
+    This factory pattern is required because DurableEntity subclasses cannot
+    have custom constructors due to durabletask SDK constraints.
+    
+    Args:
+        agent: The agent instance to inject into the entity
+        
+    Returns:
+        A new AgentEntity class with the agent pre-configured
+    """
+    class ConfiguredAgentEntity(AgentEntity):
+        def __init__(self):
+            self.agent = agent
+            self.state = DurableAgentState()
+    
+    return ConfiguredAgentEntity
 ```
 
 ### 4. The Worker Wrapper (`_worker.py`)
 
-The `AgentWorker` wraps an existing `durabletask` worker instance.
+The `DurableAIAgentWorker` wraps an existing `durabletask` worker instance.
 
 ```python
-class AgentWorker:
-    def __init__(self, worker: TaskHubWorker | TaskHubGrpcWorker):
+class DurableAIAgentWorker:
+    def __init__(self, worker: TaskHubGrpcWorker):
         self._worker = worker
+        self._registered_agents: dict[str, AgentProtocol] = {}
 
     def add_agent(self, agent: AgentProtocol) -> None:
-        """Registers an agent with the worker."""
-        entity_name = f"agent:{agent.name}"
+        """Registers an agent with the worker.
         
-        def entity_factory(context):
-            return AgentEntity(agent)
-            
-        self._worker.register_entity(entity_name, entity_factory)
+        Uses the factory pattern to create an AgentEntity class with the agent
+        instance injected, then registers it with the durabletask worker.
+        """
+        # Store the agent reference
+        self._registered_agents[agent.name] = agent
+        
+        # Create a configured entity class using the factory
+        entity_class = create_agent_entity(agent)
+        
+        # Register the entity class with the worker
+        # The worker.add_entity method takes a class or function
+        self._worker.add_entity(entity_class)
 
-    async def start(self):
-        await self._worker.start()
+    def start(self):
+        """Start the worker to begin processing tasks."""
+        self._worker.start()
 
-    async def stop(self):
-        await self._worker.stop()
+    def stop(self):
+        """Stop the worker gracefully."""
+        self._worker.stop()
 ```
 
-### 5. External Client Interaction (`_client.py`)
-
-The `AgentClient` is strictly for external clients (e.g., FastAPI, CLI) interacting with the backend.
+### 5. The Mixin (`_utils.py`)
 
 ```python
-class AgentClient:
-    def __init__(self, client: TaskHubClient | TaskHubGrpcClient):
+class GetDurableAgentMixin:
+    """Mixin to provide get_agent interface."""
+    
+    def get_agent(self, agent_name: str) -> 'DurableAIAgent':
+        raise NotImplementedError
+```
+
+### 6. The Client Wrapper (`_client.py`)
+
+The `DurableAIAgentClient` is for external clients (e.g., FastAPI, CLI).
+
+```python
+class DurableAIAgentClient(GetDurableAgentMixin):
+    def __init__(self, client: TaskHubGrpcClient):
         self._client = client
 
-    async def run_agent(
-        self, 
-        agent_name: str, 
-        message: str, 
-        thread_id: str | None = None,
-        timeout_seconds: float = 60.0
-    ) -> AgentRunResponse:
-        """Runs an agent and waits for the result via polling."""
+    async def get_agent(self, agent_name: str) -> 'DurableAIAgent':
+        """Retrieves a DurableAIAgent shim.
         
-        thread_id = thread_id or str(uuid.uuid4())
-        correlation_id = str(uuid.uuid4())
-        entity_id = EntityId(f"agent:{agent_name}", thread_id)
-        
-        request = RunRequest(
-            message=message,
-            thread_id=thread_id,
-            correlation_id=correlation_id
-        )
-        
-        # Signal Entity (Fire-and-forget)
-        await self._client.signal_entity(
-            entity_id, 
-            "run_agent", 
-            request.to_dict()
-        )
-        
-        # Poll for Result
-        start_time = time.time()
-        while (time.time() - start_time) < timeout_seconds:
-            state = await self._client.read_entity_state(entity_id)
-            if state:
-                durable_state = DurableAgentState.from_dict(state)
-                response_entry = durable_state.try_get_agent_response_entry(correlation_id)
-                if response_entry:
-                    return response_entry.to_run_response()
-            
-            await asyncio.sleep(1.0)
-            
-        raise TimeoutError("Agent did not respond in time.")
+        Validates existence by attempting to fetch entity state/metadata.
+        """
+        # Validation logic using self._client.get_entity(...)
+        # ...
+        return DurableAIAgent(self, agent_name)
+
+    def run_agent(self, agent_name: str, message: str, **kwargs) -> 'Task':
+        """Runs agent via signal + poll and returns a Task wrapper."""
+        # Returns a ClientTask (wrapper around asyncio.Task)
+        pass
 ```
 
-### 6. Internal Orchestration Interaction (`_orchestration.py`)
+### 7. The Orchestrator Wrapper (`_orchestrator.py`)
 
-We provide a functional helper `call_agent` (or a wrapper class `AgentOrchestrationContext`) for use *inside* orchestrations. This clearly separates the "yield" behavior from the "await" behavior.
+The `DurableAIAgentOrchestrator` is for use *inside* orchestrations.
 
 ```python
-def call_agent(
-    context: OrchestrationContext,
-    agent_name: str,
-    message: str,
-    thread_id: str | None = None
-) -> Task:
-    """
-    Helper to call an agent entity from within an orchestration.
-    Returns a Task that must be yielded.
-    """
-    thread_id = thread_id or context.instance_id # Default to orchestration ID
-    correlation_id = str(uuid.uuid4())
-    entity_id = EntityId(f"agent:{agent_name}", thread_id)
-    
-    request = RunRequest(
-        message=message,
-        thread_id=thread_id,
-        correlation_id=correlation_id
-    )
-    
-    # Returns the Task directly
-    return context.call_entity(entity_id, "run_agent", request.to_dict())
+class DurableAIAgentOrchestrator(GetDurableAgentMixin):
+    def __init__(self, context: OrchestrationContext):
+        self._context = context
+
+    def get_agent(self, agent_name: str) -> 'DurableAIAgent':
+        """Retrieves a DurableAIAgent shim.
+        
+        Validation is deferred or performed via call_entity if needed.
+        """
+        return DurableAIAgent(self, agent_name)
+
+    def run_agent(self, agent_name: str, message: str, **kwargs) -> 'Task':
+        """Runs agent via call_entity and returns the Task."""
+        # Returns the native durabletask.Task
+        pass
 ```
 
-## Comparison: `azurefunctions` vs `durabletask`
+### 8. The Durable Agent Shim (`_shim.py`)
 
-| Feature | `packages/azurefunctions` | `packages/durabletask` |
-| :--- | :--- | :--- |
-| **Entity Base Class** | `azure.durable_functions.DurableEntity` | `durabletask.entities.DurableEntity` |
-| **Registration** | Function App Decorators | `worker.add_agent(agent)` (via Wrapper) |
-| **Client API** | HTTP Requests | `client.run_agent(...)` (via Wrapper) |
-| **Orchestration API** | `DurableAIAgent(context).run(...)` | `yield call_agent(context, ...)` |
-| **State Schema** | `_durable_agent_state.py` | Same Schema (Shared/Duplicated) |
-| **Execution** | In-process (Functions Runtime) | In-process (TaskHubWorker / Managed Worker) |
+The `DurableAIAgent` implements `AgentProtocol` but delegates execution to the provider.
+
+```python
+class DurableAIAgent(AgentProtocol):
+    """A shim that delegates execution to the provider (Client or Orchestrator)."""
+    
+    def __init__(self, provider: GetDurableAgentMixin, name: str):
+        self._provider = provider
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def run(self, message: str, **kwargs) -> 'Task':
+        """Executes the agent.
+        
+        Returns:
+            Task: A yieldable/awaitable task object.
+        """
+        return self._provider.run_agent(
+            agent_name=self.name,
+            message=message,
+            **kwargs
+        )
+```
+
+## Usage Experience
+
+**Scenario A: Client Side**
+```python
+client = TaskHubGrpcClient(...)
+agent_client = DurableAIAgentClient(client)
+agent = await agent_client.get_agent("my_agent")
+
+# Returns a Task-like object, so we await it
+response = await agent.run("Hello")
+```
+
+**Scenario B: Orchestration Side**
+```python
+def orchestrator(context):
+    agent_orch = DurableAIAgentOrchestrator(context)
+    agent = agent_orch.get_agent("my_agent")
+
+    # Returns a Task, so we yield it
+    result = yield agent.run("Hello")
+```
 
 ## Implementation Steps
 
 1.  **Scaffold Package**: Create directory structure and `pyproject.toml`.
 2.  **Port State Models**: Copy `_durable_agent_state.py` and `_models.py` (adapting imports).
 3.  **Implement `AgentEntity`**: Create `_entities.py`.
-4.  **Implement `AgentWorker`**: Create `_worker.py`.
-5.  **Implement `AgentClient`**: Create `_client.py` (External only).
-6.  **Implement Orchestration Helpers**: Create `_orchestration.py` (Internal only).
-7.  **Tests**: Add unit tests and integration tests.
+4.  **Implement `DurableAIAgentWorker`**: Create `_worker.py`.
+5.  **Implement `GetDurableAgentMixin`**: Create `_utils.py` (or `_mixins.py`).
+6.  **Implement `DurableAIAgent`**: Create `_shim.py`.
+7.  **Implement `DurableAIAgentClient`**: Create `_client.py`.
+8.  **Implement `DurableAIAgentOrchestrator`**: Create `_orchestrator.py`.
+9.  **Tests**: Add unit tests and integration tests.
+
+## Additional Styles Considered
+
+### Inheritance Pattern for `DurableAIAgentWorker`
+
+We investigated inheriting `DurableAIAgentWorker` directly from `TaskHubGrpcWorker` (or `DurableTaskSchedulerWorker`) to provide a unified API where the agent worker *is* a durable task worker.
+
+**Why we chose Composition over Inheritance:**
+
+1.  **Initialization Divergence:** The `durabletask` package has two distinct worker classes with incompatible `__init__` signatures:
+    *   `TaskHubGrpcWorker`: Requires `host_address`, `metadata`, etc.
+    *   `DurableTaskSchedulerWorker`: Requires `host_address`, `taskhub`, `token_credential`, etc.
+    
+    To support both via inheritance, we would need to maintain two separate classes (e.g., `DurableAIAgentGrpcWorker` and `DurableAIAgentSchedulerWorker`) or use a complex Mixin approach. This increases the API surface area and maintenance burden.
+
+2.  **Encapsulation:** The logic for Azure Managed DTS (authentication, routing) is currently encapsulated in an internal interceptor class within `durabletask`. Without changes to the upstream package to expose this logic, we cannot create a single "Universal" worker class that inherits from the base worker but supports Azure features.
+
+3.  **Flexibility:** The Composition pattern allows `DurableAIAgentWorker` to accept *any* instance of a worker that satisfies the required interface. This makes it forward-compatible with future worker implementations or custom subclasses without requiring code changes in our package.
+
+4.  **Simplicity:** While Composition requires a two-step setup (instantiate worker, then wrap it), it keeps the `agent-framework-durabletask` package simple, focused, and loosely coupled from the implementation details of the underlying `durabletask` workers.

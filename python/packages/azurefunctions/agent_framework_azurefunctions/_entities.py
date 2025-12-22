@@ -471,7 +471,7 @@ def create_agent_entity(
             else:
                 loop.run_until_complete(_entity_coroutine(context))
 
-        except Exception as exc:  # pragma: no cover - defensive logging
+        except Exception as exc:
             logger.error("[entity_function] Unexpected error executing entity: %s", exc, exc_info=True)
             context.set_result({"error": str(exc), "status": "error"})
 
